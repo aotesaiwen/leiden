@@ -16,18 +16,11 @@
 //! 3. **Aggregate** (`aggregate.rs`): turn each piece into one node, giving
 //!    a smaller graph. Go back to step 1 on that graph.
 //!
-//! Stop when step 1 leaves every node alone in its own community.
+//! A pass stops when step 1 leaves every node of the current graph alone
+//! in its own community. A node at that level may represent many original nodes.
 //!
-//! ## What's done and what's yours
-//! - `graph.rs` and `rng.rs` are finished.
-//! - Every `todo!()` is yours. `todo!()` compiles but crashes if it runs,
-//!   so you can fill in one function at a time.
-//! - Suggested order: modularity.rs → partition.rs → local_move.rs →
-//!   refine.rs → aggregate.rs → `leiden_pass` / `leiden` below.
-
-// Hides "unused" warnings while functions are still todo!().
-// Delete this line when you're done.
-#![allow(unused_variables, dead_code, unused_imports, unused_mut)]
+//! Further passes start again on the original graph, using the previous
+//! pass's partition. `LeidenConfig::iterations` controls when to stop.
 
 mod aggregate;
 pub mod graph;
@@ -51,7 +44,8 @@ use rng::Rng;
 pub struct LeidenConfig {
     /// Bigger = smaller communities. 1.0 is standard modularity.
     pub resolution: f64,
-    /// How random the refine step is. 0.01 is a good default.
+    /// How random the refine step is. Must be positive and finite.
+    /// 0.01 is a good default.
     pub randomness: f64,
     /// How many times to run the whole algorithm (each run starts from the
     /// last result). `None` = keep going until nothing changes.
@@ -72,13 +66,32 @@ impl Default for LeidenConfig {
 }
 
 /// Run Leiden. Returns which community each node is in.
+///
+/// Assumes nonnegative, finite edge weights and a positive total weight
+/// for nonempty graphs. `resolution` must be nonnegative and finite.
+/// `Some(0)` iterations returns the singleton partition.
 pub fn leiden(graph: &Graph, config: &LeidenConfig) -> Partition {
-    // 1. Make an Rng from config.seed.
-    // 2. Start with every node alone: Partition::singleton(graph).
-    // 3. Call leiden_pass `config.iterations` times, passing the result
-    //    of one call into the next.
-    // 4. renumber() the result and return it.
-    todo!()
+    let mut rng = Rng::new(config.seed);
+    let mut partition = Partition::singleton(graph);
+
+    match config.iterations {
+        Some(iterations) => {
+            for _ in 0..iterations {
+                let (next, _) = leiden_pass(graph, partition, config, &mut rng);
+                partition = next;
+            }
+        }
+        None => loop {
+            let (next, changed) = leiden_pass(graph, partition, config, &mut rng);
+            partition = next;
+            if !changed {
+                break;
+            }
+        },
+    }
+
+    partition.renumber();
+    partition
 }
 
 /// One full run of the algorithm, starting from `start`.
@@ -89,21 +102,49 @@ fn leiden_pass(
     config: &LeidenConfig,
     rng: &mut Rng,
 ) -> (Partition, bool) {
-    // The graph shrinks every round, so keep track of where each original
-    // node ended up:
-    //     node_of[original node] = node in the current (smaller) graph
-    // It starts as 0, 1, 2, ... n-1.
-    //
-    // Loop:
-    //   a. move_nodes_fast(...)              (step 1)
-    //   b. if every node is alone in its community → stop
-    //   c. refined = refine_partition(...)   (step 2), then refined.renumber()
-    //   d. smaller = aggregate_graph(...)    (step 3)
-    //   e. partition = lift_partition(...)   (carry communities to `smaller`)
-    //   f. update node_of: node_of[i] = refined.community_of(node_of[i])
-    //   g. current_graph = smaller
-    //
-    // Finally: original node i is in community partition.community_of(node_of[i]).
-    // Build a Partition from that with Partition::from_membership.
-    todo!()
+    let mut current_graph = graph.clone();
+    let mut partition = start;
+    // node_of[i] is the current graph node representing original node i.
+    let mut node_of: Vec<usize> = (0..graph.num_nodes()).collect();
+    let mut changed = false;
+
+    loop {
+        let moved = move_nodes_fast(
+            &current_graph,
+            &mut partition,
+            config.resolution,
+            rng,
+        );
+        changed |= moved;
+
+        if partition.num_communities() == current_graph.num_nodes() {
+            break;
+        }
+
+        let mut refined = refine_partition(
+            &current_graph,
+            &partition,
+            config.resolution,
+            config.randomness,
+            rng,
+        );
+        refined.renumber();
+
+        let smaller_graph = aggregate_graph(&current_graph, &refined);
+        let next_partition = lift_partition(&refined, &partition, &smaller_graph);
+
+        for node in &mut node_of {
+            *node = refined.community_of(*node);
+        }
+
+        current_graph = smaller_graph;
+        partition = next_partition;
+    }
+
+    // Expand the final communities back to the original graph.
+    let membership = node_of
+        .into_iter()
+        .map(|node| partition.community_of(node))
+        .collect();
+    (Partition::from_membership(graph, membership), changed)
 }

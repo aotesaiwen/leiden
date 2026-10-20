@@ -27,5 +27,61 @@ pub(crate) fn move_nodes_fast(
     resolution: f64,
     rng: &mut Rng,
 ) -> bool {
-    todo!()
+    let n = partition.num_nodes();
+    let mut order: Vec<usize> = (0..n).collect();
+    rng.shuffle(&mut order);
+    let mut queue: VecDeque<usize> = order.into_iter().collect();
+    let mut in_queue = vec![true; n];
+
+    let mut flag: bool = false;
+    while let Some(v) = queue.pop_front() {
+        in_queue[v] = false;
+        let map = partition.neighbor_community_weights(graph, v);
+        let cur_c = partition.community_of(v);
+        let edges_to_cur = *map.get(&cur_c).unwrap_or(&0.0);
+
+        let mut best_c = partition.community_of(v);
+        let mut best_gain = move_gain(
+            edges_to_cur,
+            partition.degree(v),
+            partition.community_degree(cur_c) - partition.degree(v),
+            resolution,
+            graph.total_weight(),
+        );
+
+        let mut candidates: Vec<usize> = map.keys().copied().collect();
+        candidates.sort_unstable();
+        for c in candidates {
+            if c == cur_c {
+                continue;
+            }
+            let w = map[&c];
+            let gain = move_gain(
+                w,
+                partition.degree(v),
+                partition.community_degree(c),
+                resolution,
+                graph.total_weight(),
+            );
+            if gain > best_gain {
+                best_gain = gain;
+                best_c = c;
+            }
+        }
+        if best_gain < 0.0 {
+            best_c = partition.empty_community();
+        }
+
+        if best_c != cur_c {
+            partition.move_node(v, best_c);
+            flag = true;
+            for &(u, _) in graph.neighbors(v) {
+                if !in_queue[u] && partition.community_of(u) != best_c {
+                    queue.push_back(u);
+                    in_queue[u] = true;
+                }
+            }
+        }
+    }
+    flag
 }

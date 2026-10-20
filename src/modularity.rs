@@ -13,6 +13,8 @@
 //! - `degree_c`: sum of the degrees of C's nodes (not counting v).
 //! - `resolution`: bigger = smaller communities. 1.0 is standard.
 
+use std::collections::HashMap;
+
 use crate::graph::Graph;
 use crate::partition::Partition;
 
@@ -36,5 +38,25 @@ pub fn move_gain(
 /// degree_C = sum of degrees of C's nodes
 /// m        = graph.total_weight()
 pub fn modularity(graph: &Graph, partition: &Partition, resolution: f64) -> f64 {
-    todo!()
+    let m = graph.total_weight();
+    let mut inside: HashMap<usize, f64> = HashMap::new();
+
+    for v in 0..partition.num_nodes() {
+        inside.entry(partition.community_of(v)).or_insert(0.0);
+    }
+
+    for v in 0..partition.num_nodes() {
+        for &(u, w) in graph.neighbors(v) {
+            let cur_c = partition.community_of(v);
+            if cur_c == partition.community_of(u) && v <= u {
+                *inside.entry(cur_c).or_insert(0.0) += w;
+            }
+        }
+    }
+
+    let mut total = 0.0;
+    for (&c, &in_c) in inside.iter() {
+        total += in_c / m - resolution * (partition.community_degree(c) / (2f64 * m)).powi(2);
+    }
+    total
 }
